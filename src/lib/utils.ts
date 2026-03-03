@@ -1,10 +1,10 @@
-import { clsx, type ClassValue } from "clsx"
-import { twMerge } from "tailwind-merge"
+import { clsx, type ClassValue } from "clsx";
+import { twMerge } from "tailwind-merge";
 import Decimal from "decimal.js";
 import BN from "bn.js";
 
 export function cn(...inputs: ClassValue[]) {
-  return twMerge(clsx(inputs))
+  return twMerge(clsx(inputs));
 }
 
 export function decimalToBN(decimal: Decimal): BN {
@@ -20,4 +20,8 @@ export function bn(value: Decimal | bigint): BN {
   } else {
     throw new Error(`Invalid type of value: ${value}`);
   }
+}
+
+export function getIsDesktop(width: number) {
+  return width >= 1_024;
 }

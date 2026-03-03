@@ -1,10 +1,16 @@
-import { Connection, PublicKey, Keypair, VersionedTransaction } from "@solana/web3.js";
+import {
+  Connection,
+  PublicKey,
+  Keypair,
+  SendTransactionError,
+  VersionedTransaction,
+} from "@solana/web3.js";
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
 import Decimal from "decimal.js";
 import bs58 from "bs58";
 
 export const createConnection = () => {
-  return new Connection(import.meta.env.VITE_HELIUS_RPC_URL);
+  return new Connection(import.meta.env.VITE_HELIUS_RPC_URL, "confirmed");
 };
 
 export const createKeypair = (privateKey: string) => {
@@ -12,7 +18,10 @@ export const createKeypair = (privateKey: string) => {
   return Keypair.fromSecretKey(secretKey);
 };
 
-export const getSolanaBalance = async (publicKey: string, connection: Connection): Promise<Decimal> => {
+export const getSolanaBalance = async (
+  publicKey: string,
+  connection: Connection,
+): Promise<Decimal> => {
   const balance = await connection.getBalance(new PublicKey(publicKey));
   return new Decimal(balance);
 };
@@ -51,22 +60,42 @@ export const getTokenBalance = async (
   }
 };
 
-export const signTransaction = (keypair: Keypair, transaction: VersionedTransaction): VersionedTransaction => {
+export const signTransaction = (
+  keypair: Keypair,
+  transaction: VersionedTransaction,
+): VersionedTransaction => {
   transaction.sign([keypair]);
   return transaction;
 };
 
-export const sendTransaction = async (transaction: VersionedTransaction, connection: Connection) => {
-  const signature = await connection.sendTransaction(transaction);
-  return signature;
+export const sendTransaction = async (
+  transaction: VersionedTransaction,
+  connection: Connection,
+) => {
+  try {
+    return await connection.sendTransaction(transaction, {
+      skipPreflight: false,
+      preflightCommitment: "confirmed",
+      maxRetries: 3,
+    });
+  } catch (error: unknown) {
+    if (error instanceof SendTransactionError) {
+      try {
+        const logs = await error.getLogs(connection);
+        if (logs && logs.length > 0) {
+          throw new Error(`${error.message}\n${logs.join("\n")}`);
+        }
+      } catch {
+        // If fetching logs fails, fall through to original error.
+      }
+    }
+    throw error;
+  }
 };
 
-export const confirmTransaction = async (signature: string, connection: Connection) => {
-  const blockHash = await connection.getLatestBlockhash();
-  const confirmation = await connection.confirmTransaction({
-    signature,
-    blockhash: blockHash.blockhash,
-    lastValidBlockHeight: blockHash.lastValidBlockHeight,
-  }, "confirmed");
-  return confirmation;
+export const confirmTransaction = async (
+  signature: string,
+  connection: Connection,
+) => {
+  return connection.confirmTransaction(signature, "confirmed");
 };

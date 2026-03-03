@@ -107,3 +107,13 @@
     /* --font-sans: var(--font-geist-sans); */
   }
 }
+
+/* Hide scrollbar while keeping scroll behavior. */
+.instant-scroll-hide {
+  -ms-overflow-style: none; /* IE/Edge legacy */
+  scrollbar-width: none; /* Firefox */
+}
+
+.instant-scroll-hide::-webkit-scrollbar {
+  display: none; /* Chrome/Safari/Edge */
+}
