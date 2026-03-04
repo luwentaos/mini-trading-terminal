@@ -3,7 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { useEffect, useState, Suspense } from "react";
 import { TokenChart, ChartDataPoint } from "@/components/TokenChart";
 import { TradingPanel } from "@/components/TradingPanel";
-import { InstantTrading } from "@/components/InstantTrading";
+import { InstantTrading } from "@/components/InstantTrading/index";
 import {
   TokenPageProvider,
   useTokenPageContext,
@@ -225,173 +225,179 @@ function TokenPageBody() {
       >
         <div className="w-full max-w-6xl grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 space-y-6">
-          <Suspense
-            fallback={
-              <Card>
-                <CardHeader>
-                  <CardTitle>Price Chart</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <p>Loading chart...</p>
-                </CardContent>
-              </Card>
-            }
-          >
-            <TokenChart
-              data={bars}
-              title={`${tokenSymbol || "Token"} Price Chart`}
-            />
-          </Suspense>
+            <Suspense
+              fallback={
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Price Chart</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <p>Loading chart...</p>
+                  </CardContent>
+                </Card>
+              }
+            >
+              <TokenChart
+                data={bars}
+                title={`${tokenSymbol || "Token"} Price Chart`}
+              />
+            </Suspense>
 
-          <Card>
-            <CardHeader>
-              <CardTitle>Recent Transactions</CardTitle>
-              {isDesktop && (
-                <CardAction>
-                  <button
-                    onClick={() => setVisible(true)}
-                    className="text-xs px-3 py-1.5 rounded-md bg-[#0b3a1c]/80 text-[#3ddd72] border border-[#1a5e30] hover:bg-[#0b3a1c] transition-colors font-semibold"
-                  >
-                    Instant Trading
-                  </button>
-                </CardAction>
-              )}
-            </CardHeader>
-            <CardContent>
-              {events.length > 0 ? (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Type</TableHead>
-                      <TableHead>Time</TableHead>
-                      <TableHead>Value (USD)</TableHead>
-                      <TableHead>Tx Hash</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {events.map((event) => (
-                      <TableRow key={event.uniqueId || event.id}>
-                        <TableCell>{event.eventDisplayType || "N/A"}</TableCell>
-                        <TableCell>
-                          {new Date(event.timestamp * 1000).toLocaleString()}
-                        </TableCell>
-                        <TableCell>
-                          {event.amountUsd
-                            ? `$${event.amountUsd.toFixed(2)}`
-                            : "N/A"}
-                        </TableCell>
-                        <TableCell className="truncate">
-                          <span title={event.transactionHash}>
-                            {event.transactionHash.substring(0, 8)}...
-                          </span>
-                        </TableCell>
+            <Card>
+              <CardHeader>
+                <CardTitle>Recent Transactions</CardTitle>
+                {isDesktop && (
+                  <CardAction>
+                    <button
+                      onClick={() => setVisible(true)}
+                      className="text-xs px-3 py-1.5 rounded-md bg-[#0b3a1c]/80 text-[#3ddd72] border border-[#1a5e30] hover:bg-[#0b3a1c] transition-colors font-semibold"
+                    >
+                      Instant Trading
+                    </button>
+                  </CardAction>
+                )}
+              </CardHeader>
+              <CardContent>
+                {events.length > 0 ? (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Type</TableHead>
+                        <TableHead>Time</TableHead>
+                        <TableHead>Value (USD)</TableHead>
+                        <TableHead>Tx Hash</TableHead>
                       </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              ) : (
-                <p className="text-muted-foreground">
-                  No recent transaction data available.
-                </p>
-              )}
-            </CardContent>
-          </Card>
+                    </TableHeader>
+                    <TableBody>
+                      {events.map((event) => (
+                        <TableRow key={event.uniqueId || event.id}>
+                          <TableCell>
+                            {event.eventDisplayType || "N/A"}
+                          </TableCell>
+                          <TableCell>
+                            {new Date(event.timestamp * 1000).toLocaleString()}
+                          </TableCell>
+                          <TableCell>
+                            {event.amountUsd
+                              ? `$${event.amountUsd.toFixed(2)}`
+                              : "N/A"}
+                          </TableCell>
+                          <TableCell className="truncate">
+                            <span title={event.transactionHash}>
+                              {event.transactionHash.substring(0, 8)}...
+                            </span>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                ) : (
+                  <p className="text-muted-foreground">
+                    No recent transaction data available.
+                  </p>
+                )}
+              </CardContent>
+            </Card>
           </div>
 
           <div className="lg:col-span-1 space-y-6">
             {details && <TradingPanel token={details} pairs={pairs} />}
 
-          <Card>
-            <CardHeader className="flex flex-row items-center space-x-4">
-              {details?.info?.imageThumbUrl ? (
-                <img
-                  src={details.info.imageThumbUrl}
-                  alt={`${details.name || "Token"} icon`}
-                  width={40}
-                  height={40}
-                  className="rounded-full"
-                />
-              ) : (
-                <div className="w-10 h-10 rounded-full bg-muted flex items-center justify-center text-lg font-semibold">
-                  {details?.symbol ? details.symbol[0] : "T"}
-                </div>
-              )}
-              <div>
-                <CardTitle>Information</CardTitle>
-                {details?.symbol && (
-                  <CardDescription>{details.symbol}</CardDescription>
+            <Card>
+              <CardHeader className="flex flex-row items-center space-x-4">
+                {details?.info?.imageThumbUrl ? (
+                  <img
+                    src={details.info.imageThumbUrl}
+                    alt={`${details.name || "Token"} icon`}
+                    width={40}
+                    height={40}
+                    className="rounded-full"
+                  />
+                ) : (
+                  <div className="w-10 h-10 rounded-full bg-muted flex items-center justify-center text-lg font-semibold">
+                    {details?.symbol ? details.symbol[0] : "T"}
+                  </div>
                 )}
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-2">
-              {details ? (
-                <>
-                  <p className="text-sm">
-                    <strong className="text-muted-foreground">Address:</strong>
-                    <span
-                      className="font-mono block break-all"
-                      title={details.address}
-                    >
-                      {details.address}
-                    </span>
-                  </p>
-                  {details.info?.description && (
+                <div>
+                  <CardTitle>Information</CardTitle>
+                  {details?.symbol && (
+                    <CardDescription>{details.symbol}</CardDescription>
+                  )}
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {details ? (
+                  <>
                     <p className="text-sm">
                       <strong className="text-muted-foreground">
-                        Description:
-                      </strong>{" "}
-                      {details.info?.description}
-                    </p>
-                  )}
-                </>
-              ) : (
-                <p className="text-muted-foreground">
-                  Token details could not be loaded.
-                </p>
-              )}
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="flex flex-row items-center space-x-4">
-              <CardTitle>Pools</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-2">
-              {pairs ? (
-                <div className="space-y-2">
-                  {pairs.map((pair) => (
-                    <div
-                      className="text-sm"
-                      key={
-                        pair.pair?.id ??
-                        Math.random().toString(36).substring(2, 15)
-                      }
-                    >
-                      <div className="flex justify-between items-start">
-                        <strong className="text-muted-foreground">
-                          {pair.exchange?.name || "Unknown Exchange"}
-                        </strong>
-                        <span className="text-xs text-muted-foreground">
-                          24h Volume: $
-                          {parseFloat(pair.volumeUSD24 || "0").toLocaleString()}
-                        </span>
-                      </div>
+                        Address:
+                      </strong>
                       <span
                         className="font-mono block break-all"
-                        title={pair.pair?.address || ""}
+                        title={details.address}
                       >
-                        {pair.pair?.address || ""}
+                        {details.address}
                       </span>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-muted-foreground">
-                  Token details could not be loaded.
-                </p>
-              )}
-            </CardContent>
-          </Card>
+                    </p>
+                    {details.info?.description && (
+                      <p className="text-sm">
+                        <strong className="text-muted-foreground">
+                          Description:
+                        </strong>{" "}
+                        {details.info?.description}
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  <p className="text-muted-foreground">
+                    Token details could not be loaded.
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="flex flex-row items-center space-x-4">
+                <CardTitle>Pools</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {pairs ? (
+                  <div className="space-y-2">
+                    {pairs.map((pair) => (
+                      <div
+                        className="text-sm"
+                        key={
+                          pair.pair?.id ??
+                          Math.random().toString(36).substring(2, 15)
+                        }
+                      >
+                        <div className="flex justify-between items-start">
+                          <strong className="text-muted-foreground">
+                            {pair.exchange?.name || "Unknown Exchange"}
+                          </strong>
+                          <span className="text-xs text-muted-foreground">
+                            24h Volume: $
+                            {parseFloat(
+                              pair.volumeUSD24 || "0",
+                            ).toLocaleString()}
+                          </span>
+                        </div>
+                        <span
+                          className="font-mono block break-all"
+                          title={pair.pair?.address || ""}
+                        >
+                          {pair.pair?.address || ""}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-muted-foreground">
+                    Token details could not be loaded.
+                  </p>
+                )}
+              </CardContent>
+            </Card>
           </div>
         </div>
 
