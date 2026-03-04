@@ -37,6 +37,8 @@ const DEFAULT_COMPUTE_UNIT_LIMIT = 350_000;
 const DEFAULT_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 5_000;
 const SPL_TOKEN_ACCOUNT_SIZE = 165;
 const MIN_TX_FEE_BUFFER_LAMPORTS = 20_000;
+const BPS_DENOMINATOR = 10_000;
+const POOL_STATE_MIN_DATA_LEN = 265;
 
 const POOL_STATE_OFFSETS = {
   ammConfig: 1,
@@ -107,8 +109,21 @@ export default class RaydiumCLMM {
     slippageBps: number;
   }): Promise<GetRaydiumCLMMSwapQuote> {
     const { poolAddress, inputMint, outputMint, amountIn, slippageBps } = args;
+    if (amountIn.lte(new BN(0))) {
+      throw new Error("Invalid quote input. `amountIn` must be greater than 0.");
+    }
+    if (
+      !Number.isSafeInteger(slippageBps) ||
+      slippageBps < 0 ||
+      slippageBps > BPS_DENOMINATOR
+    ) {
+      throw new Error(
+        `Invalid slippage bps: ${slippageBps}. Expected an integer between 0 and ${BPS_DENOMINATOR}.`,
+      );
+    }
 
     const pool = await RaydiumCLMM.getPoolState(poolAddress);
+    RaydiumCLMM.validatePoolStateForSwap(pool, poolAddress);
     const isInputToken0 = inputMint.equals(pool.tokenMint0);
     const isOutputToken0 = outputMint.equals(pool.tokenMint0);
 
@@ -125,10 +140,15 @@ export default class RaydiumCLMM {
       pool.mintDecimals1,
       isInputToken0,
     );
+    if (outAmount.lte(new BN(0))) {
+      throw new Error(
+        "Quote output is zero. Trade amount is likely too small for current pool price/liquidity.",
+      );
+    }
 
     const minimumOut = outAmount
-      .mul(new BN(10000 - slippageBps))
-      .div(new BN(10000));
+      .mul(new BN(BPS_DENOMINATOR - slippageBps))
+      .div(new BN(BPS_DENOMINATOR));
 
     return {
       inAmount: amountIn.toString(),
@@ -163,8 +183,14 @@ export default class RaydiumCLMM {
         "Invalid minimum output. `minimumAmountOut` cannot be negative.",
       );
     }
+    if (minimumAmountOut.gt(RaydiumCLMM.maxU64BN())) {
+      throw new Error(
+        "Invalid minimum output. `minimumAmountOut` exceeds u64 range.",
+      );
+    }
 
     const pool = await RaydiumCLMM.getPoolState(poolAddress);
+    RaydiumCLMM.validatePoolStateForSwap(pool, poolAddress);
     const isInputToken0 = inputMint.equals(pool.tokenMint0);
     const isOutputToken0 = outputMint.equals(pool.tokenMint0);
 
@@ -395,19 +421,13 @@ export default class RaydiumCLMM {
       const tx = await RaydiumCLMM.buildSwapTransaction(buildArgs);
       const signedTx = await signTransaction(tx);
 
-      const { blockhash, lastValidBlockHeight } =
-        await RaydiumCLMM.connection.getLatestBlockhash();
-
       const signature = await RaydiumCLMM.connection.sendTransaction(signedTx, {
         skipPreflight: false,
         preflightCommitment: "confirmed",
         maxRetries: 3,
       });
 
-      await RaydiumCLMM.connection.confirmTransaction(
-        { signature, blockhash, lastValidBlockHeight },
-        "confirmed",
-      );
+      await RaydiumCLMM.connection.confirmTransaction(signature, "confirmed");
 
       return { status: "Success", signature };
     } catch (err: unknown) {
@@ -435,6 +455,8 @@ export default class RaydiumCLMM {
     amountIn: BN,
     minimumAmountOut: BN,
   ): Buffer {
+    RaydiumCLMM.assertBnInRange(amountIn, 64, "amountIn");
+    RaydiumCLMM.assertBnInRange(minimumAmountOut, 64, "minimumAmountOut");
     return Buffer.concat([
       SWAP_V2_DISCRIMINATOR,
       RaydiumCLMM.u64ToBuffer(amountIn),
@@ -457,6 +479,11 @@ export default class RaydiumCLMM {
     const data = Buffer.from(accountInfo.data).subarray(
       POOL_ACCOUNT_DISCRIMINATOR_SIZE,
     );
+    if (data.length < POOL_STATE_MIN_DATA_LEN) {
+      throw new Error(
+        `Pool account data is too short.\nPool: ${poolAddress.toBase58()}\nData length: ${data.length}\nExpected at least: ${POOL_STATE_MIN_DATA_LEN}`,
+      );
+    }
     const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
 
     const readPubkey = (offset: number): PublicKey =>
@@ -557,6 +584,11 @@ export default class RaydiumCLMM {
     tickIndex: number,
     tickSpacing: number,
   ): number {
+    if (!Number.isInteger(tickSpacing) || tickSpacing <= 0) {
+      throw new Error(
+        `Invalid tick spacing: ${tickSpacing}. Tick spacing must be a positive integer.`,
+      );
+    }
     const ticksInArray = TICK_ARRAY_SIZE * tickSpacing;
     let arrayIndex = tickIndex / ticksInArray;
     if (tickIndex < 0 && tickIndex % ticksInArray !== 0) {
@@ -581,6 +613,7 @@ export default class RaydiumCLMM {
   }
 
   private static u64ToBuffer(value: BN): Buffer {
+    RaydiumCLMM.assertBnInRange(value, 64, "u64 value");
     const b = BigInt(value.toString());
     const out = Buffer.alloc(8);
     out.writeBigUInt64LE(b, 0);
@@ -588,6 +621,7 @@ export default class RaydiumCLMM {
   }
 
   private static u128ToBuffer(value: BN): Buffer {
+    RaydiumCLMM.assertBnInRange(value, 128, "u128 value");
     const b = BigInt(value.toString());
     const out = Buffer.alloc(16);
     out.writeBigUInt64LE(b & ((1n << 64n) - 1n), 0);
@@ -645,6 +679,22 @@ export default class RaydiumCLMM {
     return required;
   }
 
+  private static validatePoolStateForSwap(
+    pool: ClmmPoolState,
+    poolAddress: PublicKey,
+  ): void {
+    if (!Number.isInteger(pool.tickSpacing) || pool.tickSpacing <= 0) {
+      throw new Error(
+        `Invalid pool state: tickSpacing must be a positive integer.\nPool: ${poolAddress.toBase58()}\nTick spacing: ${pool.tickSpacing}`,
+      );
+    }
+    if (pool.liquidity.lte(new BN(0))) {
+      throw new Error(
+        `Pool has no usable liquidity.\nPool: ${poolAddress.toBase58()}`,
+      );
+    }
+  }
+
   private static estimateOutAmountFromSqrtPrice(
     amountIn: BN,
     sqrtPriceX64: BN,
@@ -684,6 +734,24 @@ export default class RaydiumCLMM {
 
   private static formatLamports(lamports: number): string {
     return `${lamports} lamports (${(lamports / LAMPORTS_PER_SOL).toFixed(9)} SOL)`;
+  }
+
+  private static assertBnInRange(value: BN, bits: 64 | 128, fieldName: string): void {
+    if (value.lt(new BN(0))) {
+      throw new Error(`Invalid ${fieldName}: value must be non-negative.`);
+    }
+    const max = bits === 64 ? RaydiumCLMM.maxU64BN() : RaydiumCLMM.maxU128BN();
+    if (value.gt(max)) {
+      throw new Error(`Invalid ${fieldName}: exceeds u${bits} range.`);
+    }
+  }
+
+  private static maxU64BN(): BN {
+    return new BN("18446744073709551615");
+  }
+
+  private static maxU128BN(): BN {
+    return new BN("340282366920938463463374607431768211455");
   }
 
   private static buildReadableSendTxError(baseMessage: string, logs: string[]): string {

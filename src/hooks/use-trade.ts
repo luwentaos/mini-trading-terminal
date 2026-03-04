@@ -9,6 +9,7 @@ import { bn } from "@/lib/utils";
 import { VersionedTransaction } from "@solana/web3.js";
 
 const DEFAULT_EXECUTION_BUFFER_BPS = 200;
+const MAX_SLIPPAGE_BPS = 10_000;
 
 export const useTrade = (tokenAddress: string, tokenAtomicBalance: Decimal) => {
   const createTransaction = useCallback(
@@ -21,12 +22,18 @@ export const useTrade = (tokenAddress: string, tokenAtomicBalance: Decimal) => {
       if (!Number.isFinite(value) || value <= 0) {
         throw new Error("Trade value must be a positive number");
       }
+      if (direction === "sell" && value > 100) {
+        throw new Error("Sell percentage cannot exceed 100");
+      }
 
       let atomicAmount;
       if (direction === "buy") {
         atomicAmount = new Decimal(value).mul(LAMPORTS_PER_SOL);
       } else {
         atomicAmount = tokenAtomicBalance.mul(value).div(100);
+      }
+      if (atomicAmount.lte(0)) {
+        throw new Error("Trade amount is too small after conversion");
       }
 
       const data = await Jupiter.getOrder({
@@ -72,6 +79,18 @@ export const useTrade = (tokenAddress: string, tokenAtomicBalance: Decimal) => {
       if (!Number.isFinite(value) || value <= 0) {
         throw new Error("Trade value must be a positive number");
       }
+      if (direction === "sell" && value > 100) {
+        throw new Error("Sell percentage cannot exceed 100");
+      }
+      if (
+        !Number.isSafeInteger(slippageBps) ||
+        slippageBps < 0 ||
+        slippageBps > MAX_SLIPPAGE_BPS
+      ) {
+        throw new Error(
+          `Invalid slippage bps: ${slippageBps}. Expected integer 0-${MAX_SLIPPAGE_BPS}.`,
+        );
+      }
 
       const tokenMint = new PublicKey(tokenAddress);
       const inputMint = direction === "buy" ? NATIVE_MINT : tokenMint;
@@ -81,6 +100,9 @@ export const useTrade = (tokenAddress: string, tokenAtomicBalance: Decimal) => {
         direction === "buy"
           ? bn(new Decimal(value).mul(LAMPORTS_PER_SOL))
           : bn(tokenAtomicBalance.mul(value).div(100));
+      if (amountIn.lte(new BN(0))) {
+        throw new Error("Trade amount is too small after conversion");
+      }
 
       const quote = await RaydiumCLMM.getQuote({
         poolAddress,
@@ -95,6 +117,11 @@ export const useTrade = (tokenAddress: string, tokenAtomicBalance: Decimal) => {
       const minimumAmountOut = new BN(quote.minimumOut)
         .mul(new BN(10000 - executionBufferBps))
         .div(new BN(10000));
+      if (minimumAmountOut.lte(new BN(0))) {
+        throw new Error(
+          "Minimum output is zero after slippage/execution buffer. Increase trade amount or reduce protection settings.",
+        );
+      }
 
       return RaydiumCLMM.buildSwapTransaction({
         payer: signer,
