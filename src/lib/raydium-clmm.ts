@@ -1,6 +1,7 @@
 import {
   ComputeBudgetProgram,
   Connection,
+  LAMPORTS_PER_SOL,
   PublicKey,
   SendTransactionError,
   SystemProgram,
@@ -34,6 +35,8 @@ const SPL_MEMO_PROGRAM_ID = new PublicKey(
 const SWAP_V2_DISCRIMINATOR = Buffer.from([43, 4, 237, 11, 26, 201, 30, 98]);
 const DEFAULT_COMPUTE_UNIT_LIMIT = 350_000;
 const DEFAULT_COMPUTE_UNIT_PRICE_MICROLAMPORTS = 5_000;
+const SPL_TOKEN_ACCOUNT_SIZE = 165;
+const MIN_TX_FEE_BUFFER_LAMPORTS = 20_000;
 
 const POOL_STATE_OFFSETS = {
   ammConfig: 1,
@@ -105,12 +108,14 @@ export default class RaydiumCLMM {
   }): Promise<GetRaydiumCLMMSwapQuote> {
     const { poolAddress, inputMint, outputMint, amountIn, slippageBps } = args;
 
-    const pool = await RaydiumCLMM.fetchAndParsePoolState(poolAddress);
+    const pool = await RaydiumCLMM.getPoolState(poolAddress);
     const isInputToken0 = inputMint.equals(pool.tokenMint0);
     const isOutputToken0 = outputMint.equals(pool.tokenMint0);
 
     if (isInputToken0 === isOutputToken0) {
-      throw new Error("Input and output mint are invalid for this CLMM pool");
+      throw new Error(
+        "Swap direction is invalid for this pool. Input and output mint must be opposite sides of the selected CLMM pool.",
+      );
     }
 
     const outAmount = RaydiumCLMM.estimateOutAmountFromSqrtPrice(
@@ -151,19 +156,21 @@ export default class RaydiumCLMM {
       minimumAmountOut,
     } = args;
     if (amountIn.lte(new BN(0))) {
-      throw new Error("amountIn must be greater than 0");
+      throw new Error("Invalid input amount. `amountIn` must be greater than 0.");
     }
     if (minimumAmountOut.lt(new BN(0))) {
-      throw new Error("minimumAmountOut must not be negative");
+      throw new Error(
+        "Invalid minimum output. `minimumAmountOut` cannot be negative.",
+      );
     }
 
-    const pool = await RaydiumCLMM.fetchAndParsePoolState(poolAddress);
+    const pool = await RaydiumCLMM.getPoolState(poolAddress);
     const isInputToken0 = inputMint.equals(pool.tokenMint0);
     const isOutputToken0 = outputMint.equals(pool.tokenMint0);
 
     if (isInputToken0 === isOutputToken0) {
       throw new Error(
-        `Pool ${poolAddress.toBase58()} does not match input/output mint direction`,
+        `Pool direction mismatch.\nPool: ${poolAddress.toBase58()}\nInput mint: ${inputMint.toBase58()}\nOutput mint: ${outputMint.toBase58()}`,
       );
     }
 
@@ -173,7 +180,9 @@ export default class RaydiumCLMM {
     ]);
 
     if (!inputMintInfo || !outputMintInfo) {
-      throw new Error("Input/output mint account not found");
+      throw new Error(
+        `Mint account not found.\nInput mint exists: ${Boolean(inputMintInfo)}\nOutput mint exists: ${Boolean(outputMintInfo)}`,
+      );
     }
 
     const inputTokenProgram = inputMint.equals(NATIVE_MINT)
@@ -208,10 +217,37 @@ export default class RaydiumCLMM {
         ASSOCIATED_TOKEN_PROGRAM_ID,
       );
 
-    const [inputAtaInfo, outputAtaInfo] = await Promise.all([
+    const [inputAtaInfo, outputAtaInfo, tokenAccountRentLamports, payerLamports] =
+      await Promise.all([
       RaydiumCLMM.connection.getAccountInfo(inputTokenAccount),
       RaydiumCLMM.connection.getAccountInfo(outputTokenAccount),
+      RaydiumCLMM.connection.getMinimumBalanceForRentExemption(
+        SPL_TOKEN_ACCOUNT_SIZE,
+      ),
+      RaydiumCLMM.connection.getBalance(payer),
     ]);
+
+    const requiredLamports = RaydiumCLMM.estimateRequiredLamportsForSwap({
+      amountIn,
+      inputMint,
+      inputAtaExists: Boolean(inputAtaInfo),
+      outputAtaExists: Boolean(outputAtaInfo),
+      tokenAccountRentLamports,
+    });
+
+    if (payerLamports < requiredLamports + MIN_TX_FEE_BUFFER_LAMPORTS) {
+      const totalNeeded = requiredLamports + MIN_TX_FEE_BUFFER_LAMPORTS;
+      const shortfall = totalNeeded - payerLamports;
+      throw new Error(
+        [
+          "Insufficient SOL balance for this swap.",
+          `Need: ${RaydiumCLMM.formatLamports(totalNeeded)}`,
+          `Have: ${RaydiumCLMM.formatLamports(payerLamports)}`,
+          `Short: ${RaydiumCLMM.formatLamports(shortfall)}`,
+          `Breakdown: required=${RaydiumCLMM.formatLamports(requiredLamports)}, fee_buffer=${RaydiumCLMM.formatLamports(MIN_TX_FEE_BUFFER_LAMPORTS)}`,
+        ].join("\n"),
+      );
+    }
 
     const preSwapIxs: TransactionInstruction[] = [];
     if (!inputAtaInfo) {
@@ -263,7 +299,9 @@ export default class RaydiumCLMM {
     );
 
     if (tickArrays.length === 0) {
-      throw new Error("No usable tick arrays found for swap");
+      throw new Error(
+        "No usable tick arrays found for swap. The pool may be inactive or RPC data is incomplete.",
+      );
     }
 
     // Raydium SwapV2 expects ex-bitmap + tick arrays as trailing remaining accounts.
@@ -374,15 +412,20 @@ export default class RaydiumCLMM {
       return { status: "Success", signature };
     } catch (err: unknown) {
       let msg = err instanceof Error ? err.message : String(err);
+      let logs: string[] = [];
       if (err instanceof SendTransactionError) {
         try {
-          const logs = await err.getLogs(RaydiumCLMM.connection);
-          if (logs && logs.length > 0) {
-            msg = `${msg}\n${logs.join("\n")}`;
+          const fetchedLogs = await err.getLogs(RaydiumCLMM.connection);
+          if (fetchedLogs && fetchedLogs.length > 0) {
+            logs = fetchedLogs;
+            msg = RaydiumCLMM.buildReadableSendTxError(msg, fetchedLogs);
           }
         } catch {
           // ignore nested log fetch errors
         }
+      }
+      if (logs.length === 0) {
+        msg = `Swap failed.\nReason: ${msg}`;
       }
       return { status: "Failed", error: msg };
     }
@@ -401,12 +444,14 @@ export default class RaydiumCLMM {
     ]);
   }
 
-  private static async fetchAndParsePoolState(
+  private static async getPoolState(
     poolAddress: PublicKey,
   ): Promise<ClmmPoolState> {
     const accountInfo = await RaydiumCLMM.connection.getAccountInfo(poolAddress);
     if (!accountInfo?.data) {
-      throw new Error(`Pool not found: ${poolAddress.toBase58()}`);
+      throw new Error(
+        `Pool account not found.\nPool: ${poolAddress.toBase58()}`,
+      );
     }
 
     const data = Buffer.from(accountInfo.data).subarray(
@@ -465,7 +510,9 @@ export default class RaydiumCLMM {
     );
 
     if (rawTickArrays.length === 0) {
-      throw new Error(`No tick array account found for pool ${poolAddress.toBase58()}`);
+      throw new Error(
+        `No tick array accounts found for pool.\nPool: ${poolAddress.toBase58()}`,
+      );
     }
 
     const arrays = rawTickArrays
@@ -476,7 +523,9 @@ export default class RaydiumCLMM {
       }));
 
     if (arrays.length === 0) {
-      throw new Error(`No decodable tick array account found for pool ${poolAddress.toBase58()}`);
+      throw new Error(
+        `Tick array accounts exist but none are decodable.\nPool: ${poolAddress.toBase58()}`,
+      );
     }
 
     const currentArray = arrays.find((a) => a.start === currentStart);
@@ -549,7 +598,9 @@ export default class RaydiumCLMM {
   private static bnToSafeNumber(value: BN, fieldName: string): number {
     const n = Number(value.toString());
     if (!Number.isSafeInteger(n) || n < 0) {
-      throw new Error(`${fieldName} exceeds JS safe integer range`);
+      throw new Error(
+        `Numeric overflow in ${fieldName}. Value must be a non-negative safe integer.`,
+      );
     }
     return n;
   }
@@ -568,6 +619,32 @@ export default class RaydiumCLMM {
     return DEFAULT_COMPUTE_UNIT_PRICE_MICROLAMPORTS;
   }
 
+  private static estimateRequiredLamportsForSwap(args: {
+    amountIn: BN;
+    inputMint: PublicKey;
+    inputAtaExists: boolean;
+    outputAtaExists: boolean;
+    tokenAccountRentLamports: number;
+  }): number {
+    const {
+      amountIn,
+      inputMint,
+      inputAtaExists,
+      outputAtaExists,
+      tokenAccountRentLamports,
+    } = args;
+
+    let required = 0;
+    if (!inputAtaExists) required += tokenAccountRentLamports;
+    if (!outputAtaExists) required += tokenAccountRentLamports;
+
+    if (inputMint.equals(NATIVE_MINT)) {
+      required += RaydiumCLMM.bnToSafeNumber(amountIn, "amountIn");
+    }
+
+    return required;
+  }
+
   private static estimateOutAmountFromSqrtPrice(
     amountIn: BN,
     sqrtPriceX64: BN,
@@ -575,34 +652,87 @@ export default class RaydiumCLMM {
     _decimals1: number,
     inputIsToken0: boolean,
   ): BN {
-    const sqrt = Number(sqrtPriceX64.toString());
-    if (!Number.isFinite(sqrt) || sqrt <= 0) {
-      return amountIn;
-    }
-
-    // Raydium CLMM sqrtPriceX64 can be treated as raw token1/token0 ratio in Q64.
-    const rawPriceToken1PerToken0 = (sqrt / 2 ** 64) * (sqrt / 2 ** 64);
-
-    if (
-      !Number.isFinite(rawPriceToken1PerToken0) ||
-      rawPriceToken1PerToken0 <= 0
-    ) {
-      return amountIn;
-    }
-
-    const inRaw = Number(amountIn.toString());
-    if (!Number.isFinite(inRaw) || inRaw <= 0) {
+    if (amountIn.lte(new BN(0))) {
       return new BN(0);
     }
 
-    const outRaw = inputIsToken0
-      ? inRaw * rawPriceToken1PerToken0
-      : inRaw / rawPriceToken1PerToken0;
-
-    if (!Number.isFinite(outRaw) || outRaw <= 0) {
-      return new BN(1);
+    if (sqrtPriceX64.lte(new BN(0))) {
+      throw new Error(
+        "Invalid pool state: `sqrtPriceX64` must be greater than 0.",
+      );
     }
 
-    return new BN(Math.floor(outRaw).toString());
+    // priceRaw(token1/token0) = sqrtPriceX64^2 / 2^128 in smallest-token units.
+    // amountIn/amountOut here are also smallest-token units, so no extra decimals scaling.
+    const sqrt = BigInt(sqrtPriceX64.toString());
+    const amount = BigInt(amountIn.toString());
+    const scale = 2n ** 128n;
+
+    let outRaw: bigint;
+    if (inputIsToken0) {
+      outRaw = (amount * sqrt * sqrt) / scale;
+    } else {
+      outRaw = (amount * scale) / (sqrt * sqrt);
+    }
+
+    if (outRaw <= 0n) {
+      return new BN(0);
+    }
+
+    return new BN(outRaw.toString());
+  }
+
+  private static formatLamports(lamports: number): string {
+    return `${lamports} lamports (${(lamports / LAMPORTS_PER_SOL).toFixed(9)} SOL)`;
+  }
+
+  private static buildReadableSendTxError(baseMessage: string, logs: string[]): string {
+    const tooLittleOutput = logs.some((line) => line.includes("TooLittleOutputReceived"));
+    if (tooLittleOutput) {
+      const left = RaydiumCLMM.extractLogNumber(logs, "Program log: Left:");
+      const right = RaydiumCLMM.extractLogNumber(logs, "Program log: Right:");
+      const lines = [
+        "Swap failed: actual output is lower than your minimum acceptable output.",
+        "Meaning: slippage protection was triggered.",
+      ];
+      if (left !== null && right !== null) {
+        lines.push(`Actual output: ${left}`);
+        lines.push(`Minimum required: ${right}`);
+      }
+      lines.push("Suggestion: increase slippage tolerance or reduce trade size.");
+      return lines.join("\n");
+    }
+
+    const insufficientLamportsLine = logs.find((line) =>
+      line.includes("Transfer: insufficient lamports"),
+    );
+    if (insufficientLamportsLine) {
+      const m = insufficientLamportsLine.match(
+        /insufficient lamports\s+(\d+), need\s+(\d+)/i,
+      );
+      if (m) {
+        const have = Number(m[1]);
+        const need = Number(m[2]);
+        return [
+          "Swap failed: insufficient SOL for transfer.",
+          `Need: ${RaydiumCLMM.formatLamports(need)}`,
+          `Have: ${RaydiumCLMM.formatLamports(have)}`,
+          `Short: ${RaydiumCLMM.formatLamports(need - have)}`,
+        ].join("\n");
+      }
+    }
+
+    return [
+      "Swap failed on-chain.",
+      `Reason: ${baseMessage}`,
+      "Logs:",
+      ...logs,
+    ].join("\n");
+  }
+
+  private static extractLogNumber(logs: string[], prefix: string): string | null {
+    const line = logs.find((item) => item.startsWith(prefix));
+    if (!line) return null;
+    return line.slice(prefix.length).trim();
   }
 }
